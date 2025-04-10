@@ -532,7 +532,6 @@ DWORD WINAPI PhysicsLoop(LPVOID lpParam)
         }
         UpdateWindow(mainHwnd);
 
-        // UpdateWindow(mainHwnd);
         // Sleep(0);
     }
 }
