@@ -1,0 +1,36 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Compile .rc File",
+            "type": "shell",
+            "command": "windres ${fileBasenameNoExtension}.rc -O coff -o ${fileBasenameNoExtension}.o",
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        },
+        {
+            "label": "Build Windows App",
+            "type": "shell",
+            "command": "gcc -O3 -g ${fileBasenameNoExtension}.c resources.o -o ${fileBasenameNoExtension}.exe -mwindows -lmsimg32",
+            "dependsOn": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        }
+        // ,
+        // {
+        //     "label": "Build C App",
+        //     "type": "shell",
+        //     "command": "gcc -g ${fileBasenameNoExtension}.c -o ${fileBasenameNoExtension}.exe",
+        //     "dependsOn": [],
+        //     "group": {
+        //         "kind": "build",
+        //         "isDefault": true
+        //     }
+        // }
+    ]
+}

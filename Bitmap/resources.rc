@@ -1,4 +1,10 @@
+<<<<<<< HEAD
 // resources.rc
 #include "resources.h"
 
+=======
+// resources.rc
+#include "resources.h"
+
+>>>>>>> 7169786 (Initial commit)
 IDB_BIRD BITMAP "test.bmp"

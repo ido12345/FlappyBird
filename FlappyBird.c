@@ -19,6 +19,8 @@ void AttachConsoleToWindow()
 
 #include "resources.h"
 
+#include "ML.h"
+
 HDC hTempDC = NULL;
 HBITMAP hCopyBitmap = NULL;
 HBITMAP hSavedBitmap = NULL;
@@ -133,11 +135,6 @@ void PlayMemorySound(UINT resourceID)
 #define PIPE_GAP 200
 #define PIPE_WIDTH 100
 
-int rand_int(int low, int high)
-{
-    return (rand() % (high - low + 1)) + low;
-}
-
 #define RECT_WIDTH(rect) (((rect).right) - ((rect).left))
 #define RECT_HEIGHT(rect) (((rect).bottom) - ((rect).top))
 
@@ -167,7 +164,7 @@ PointDouble BirdPosition = {
     .y = SCREEN_HEIGHT / 2,
 };
 ObstacleList *PipesList = NULL;
-const ObstacleList *NextObstacle = NULL;
+ObstacleList *NextObstacle = NULL;
 int PassedPipes = 0;
 const double gravity = 10;
 double birdVelocity = 0;
@@ -267,9 +264,12 @@ RECT RectCenterTo(RECT r1, RECT r2)
     return r1;
 }
 
-BOOL WINAPI BirdPipeCollision()
+BOOL BirdPipeCollision()
 {
-    for (ObstacleList *i = PipesList; i; i = i->next)
+    RECT ClientRect;
+    GetClientRect(mainHwnd, &ClientRect);
+
+    for (ObstacleList *i = PipesList; i && i->obstacle; i = i->next)
     {
         RECT topPipe = {
             .top = 0,
@@ -280,7 +280,7 @@ BOOL WINAPI BirdPipeCollision()
         RECT bottomPipe = {
             .top = i->obstacle->y + PIPE_GAP,
             .left = i->obstacle->x,
-            .bottom = 10000,
+            .bottom = ClientRect.bottom,
             .right = i->obstacle->x + PIPE_WIDTH,
         };
 
@@ -293,7 +293,7 @@ BOOL WINAPI BirdPipeCollision()
     return FALSE;
 }
 
-BOOL WINAPI BirdWindowCollision()
+BOOL BirdWindowCollision()
 {
     RECT ClientRect;
     GetClientRect(mainHwnd, &ClientRect);
@@ -309,19 +309,25 @@ BOOL WINAPI BirdWindowCollision()
     return FALSE;
 }
 
-VOID WINAPI freeObstacleList(ObstacleList *list)
+void freeObstacleList(ObstacleList *head)
 {
-    if (!list)
+    if (!head)
         return;
-    freeObstacleList(list->next);
-    if (list->obstacle)
-        GlobalFree(list->obstacle);
-    if (list->next)
-        GlobalFree(list->next);
-    GlobalFree(list);
+    freeObstacleList(head->next);
+    if (head->obstacle)
+    {
+        GlobalFree(head->obstacle);
+        head->obstacle = NULL;
+    }
+    if (head->next)
+    {
+        GlobalFree(head->next);
+        head->next = NULL;
+    }
+    GlobalFree(head);
 }
 
-ObstacleList *WINAPI NewObstacleList(PointDouble data)
+ObstacleList *NewObstacleList(PointDouble data)
 {
     ObstacleList *temp = (ObstacleList *)GlobalAlloc(GMEM_FIXED, sizeof(*temp));
     temp->obstacle = (PointDouble *)GlobalAlloc(GMEM_FIXED, sizeof(PointDouble));
@@ -331,7 +337,7 @@ ObstacleList *WINAPI NewObstacleList(PointDouble data)
     return temp;
 }
 
-VOID WINAPI InitializeGame()
+void InitializeGame()
 {
     RECT ClientRect;
     GetClientRect(mainHwnd, &ClientRect);
@@ -344,6 +350,7 @@ VOID WINAPI InitializeGame()
     if (PipesList)
     {
         freeObstacleList(PipesList);
+        PipesList = NULL;
     }
     int obstacleY = rand_int(ClientRect.top + 10, ClientRect.bottom - 10 - PIPE_GAP);
 
@@ -358,15 +365,18 @@ VOID WINAPI InitializeGame()
     BirdBitmapPTR = &BirdBitmap;
 }
 
-VOID WINAPI GameOver()
+void GameOver()
 {
     InitializeGame();
 }
 
-VOID WINAPI CheckPassedPipeObstacle()
+void CheckPassedPipeObstacle()
 {
     if (!NextObstacle || !NextObstacle->obstacle)
+    {
+        NextObstacle = PipesList;
         return;
+    }
     if ((NextObstacle->obstacle->x + PIPE_WIDTH) < (BirdPosition.x - BIRD_WIDTH / 2))
     {
         PassedPipes++;
@@ -375,22 +385,21 @@ VOID WINAPI CheckPassedPipeObstacle()
     }
 }
 
-VOID WINAPI CheckClearPipeObstacle()
+void CheckNewPipeObstacle()
 {
-    ObstacleList *first = PipesList;
-    if (first && first->obstacle->x + PIPE_WIDTH <= 0)
+    if (!PipesList)
     {
-        PipesList = PipesList->next;
-        GlobalFree(first->obstacle);
-        GlobalFree(first);
+        RECT ClientRect;
+        GetClientRect(mainHwnd, &ClientRect);
+        int obstacleY = rand_int(ClientRect.top + 10, ClientRect.bottom - 10 - PIPE_GAP);
+        PipesList = NewObstacleList((PointDouble){ClientRect.right, obstacleY});
+        return;
     }
-}
-
-VOID WINAPI CheckNewPipeObstacle()
-{
     ObstacleList *last = PipesList;
     while (last && last->next)
+    {
         last = last->next;
+    }
     if (last)
     {
         RECT ClientRect;
@@ -403,14 +412,25 @@ VOID WINAPI CheckNewPipeObstacle()
     }
 }
 
-VOID WINAPI PhysicsStep(double deltaTime)
+void CheckClearPipeObstacle()
+{
+    ObstacleList *first = PipesList;
+    if (first && first->obstacle->x + PIPE_WIDTH <= 0)
+    {
+        PipesList = PipesList->next;
+        GlobalFree(first->obstacle);
+        GlobalFree(first);
+    }
+}
+
+void PhysicsStep(double deltaTime)
 {
     double prevVelocity = birdVelocity;
     birdVelocity += gravity * deltaTime * DISTANCE_RATIO;
     double deltaY = (birdVelocity + prevVelocity) * deltaTime / 2;
     BirdPosition.y += deltaY;
 
-    for (ObstacleList *i = PipesList; i; i = i->next)
+    for (ObstacleList *i = PipesList; i && i->obstacle; i = i->next)
     {
         i->obstacle->x -= pipeVelocity * deltaTime;
     }
@@ -422,7 +442,7 @@ LARGE_INTEGER frequency;
 LARGE_INTEGER prevTime, currentTime;
 LARGE_INTEGER lastFlap;
 
-VOID WINAPI CheckBirdFlap()
+void CheckBirdFlap()
 {
     double elapsedTimeSinceFlap = (double)(currentTime.QuadPart - lastFlap.QuadPart) / frequency.QuadPart;
     if (elapsedTimeSinceFlap < 0.1)
@@ -443,7 +463,12 @@ VOID WINAPI CheckBirdFlap()
 }
 
 double accumulated = 0;
-const double fixedDelta = 0.01;
+const double fixedDelta = 0.001;
+
+#ifdef DEBUG_FPS
+unsigned long long framesPerSecond = 0;
+LARGE_INTEGER lastFramesCheck;
+#endif
 
 DWORD WINAPI PhysicsLoop(LPVOID lpParam)
 {
@@ -453,21 +478,43 @@ DWORD WINAPI PhysicsLoop(LPVOID lpParam)
         double elapsedTime = (double)(currentTime.QuadPart - prevTime.QuadPart) / frequency.QuadPart;
         prevTime = currentTime;
 
+#ifdef DEBUG_FPS
+        double elapsedTimeSinceFrames = (double)(currentTime.QuadPart - lastFramesCheck.QuadPart) / frequency.QuadPart;
+        if (elapsedTimeSinceFrames >= 1)
+        {
+            double avgFPS = (double)framesPerSecond / elapsedTimeSinceFrames;
+            system("cls");
+            printf("FPS: %.3lf\n", avgFPS);
+            lastFramesCheck = currentTime;
+            framesPerSecond = 0;
+        }
+#endif
+
         accumulated += elapsedTime;
 
         while (accumulated >= fixedDelta)
         {
+#ifdef AUTOPILOT
+            if (NextObstacle)
+            {
+                if (BirdPosition.y + BIRD_HEIGHT >= NextObstacle->obstacle->y + PIPE_GAP)
+                {
+                    BirdFlap = TRUE;
+                }
+            }
+#endif
             if (BirdFlap == TRUE)
             {
                 lastFlap = currentTime;
-                birdVelocity = -sqrt(2 * gravity * FLAP_HEIGHT * DISTANCE_RATIO);
+                birdVelocity = -sqrt(2 * gravity * DISTANCE_RATIO * FLAP_HEIGHT);
                 BirdFlap = FALSE;
-
+#ifndef AUTOPILOT
                 PlayMemorySound(IDS_FLAP);
+#endif
             }
             PhysicsStep(fixedDelta);
-            CheckNewPipeObstacle();
             CheckClearPipeObstacle();
+            CheckNewPipeObstacle();
             CheckPassedPipeObstacle();
             CheckBirdFlap();
 
@@ -476,13 +523,17 @@ DWORD WINAPI PhysicsLoop(LPVOID lpParam)
                 PlayMemorySound(IDS_DIE);
                 GameOver();
             }
+            else
+            {
+                InvalidateRect(mainHwnd, NULL, FALSE);
+            }
 
             accumulated -= fixedDelta;
         }
-
-        InvalidateRect(mainHwnd, NULL, FALSE);
         UpdateWindow(mainHwnd);
-        // Sleep(1);
+
+        // UpdateWindow(mainHwnd);
+        // Sleep(0);
     }
 }
 
@@ -503,6 +554,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         break;
     case WM_PAINT:
     {
+#ifdef DEBUG_FPS
+        framesPerSecond++;
+#endif
+
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
 
@@ -617,7 +672,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
 
         {
-            for (ObstacleList *i = PipesList; i; i = i->next)
+            for (ObstacleList *i = PipesList; i && i->obstacle; i = i->next)
             {
                 RECT topPipe = {
                     .top = 0,
@@ -730,7 +785,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 .bottom = 200,
                 .right = clientWidth,
             };
-            char ScoreDigits[100] = {0};
+            unsigned char ScoreDigits[100] = {0};
             int length = 0;
             int score = PassedPipes;
             if (score == 0)
@@ -791,9 +846,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         PostQuitMessage(0);
         break;
     default:
-        DefWindowProc(hwnd, msg, wParam, lParam);
-        break;
+        return DefWindowProc(hwnd, msg, wParam, lParam);
     }
+    return 0;
 }
 
 void InitializeAssets()
@@ -922,7 +977,9 @@ const char g_szClassName[] = "FlappyBirdWindowClass";
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
     srand(time(0));
+#if defined(DEBUG_CONSOLE) || defined(DEBUG_FPS)
     AttachConsoleToWindow();
+#endif
 
     InitializeAssets();
 
