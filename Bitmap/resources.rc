@@ -1,0 +1,4 @@
+// resources.rc
+#include "resources.h"
+
+IDB_BIRD BITMAP "test.bmp"

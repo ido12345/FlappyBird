@@ -1,0 +1,28 @@
+#include "resources.h"
+
+IDB_BIRD         BITMAP "Assets/Bird/bird.bmp"
+IDB_BIRD_MIDFLAP BITMAP "Assets/Bird/bird_midflap.bmp"
+IDB_BIRD_FLAP    BITMAP "Assets/Bird/bird_flap.bmp"
+
+IDB_BACK_DAY BITMAP "Assets/Background/background_day.bmp"
+
+IDB_PIPE_REPEAT     BITMAP "Assets/Pipe/pipe_repeat.bmp"
+IDB_PIPE_END_BOTTOM BITMAP "Assets/Pipe/pipe_end_bottom.bmp"
+IDB_PIPE_END_TOP    BITMAP "Assets/Pipe/pipe_end_top.bmp"
+
+IDB_DIGIT_0 BITMAP "Assets/Digits/0.bmp"
+IDB_DIGIT_1 BITMAP "Assets/Digits/1.bmp"
+IDB_DIGIT_2 BITMAP "Assets/Digits/2.bmp"
+IDB_DIGIT_3 BITMAP "Assets/Digits/3.bmp"
+IDB_DIGIT_4 BITMAP "Assets/Digits/4.bmp"
+IDB_DIGIT_5 BITMAP "Assets/Digits/5.bmp"
+IDB_DIGIT_6 BITMAP "Assets/Digits/6.bmp"
+IDB_DIGIT_7 BITMAP "Assets/Digits/7.bmp"
+IDB_DIGIT_8 BITMAP "Assets/Digits/8.bmp"
+IDB_DIGIT_9 BITMAP "Assets/Digits/9.bmp"
+
+IDS_FLAP  WAV "Assets/Sounds/flap.wav"
+IDS_DIE   WAV "Assets/Sounds/die.wav"
+IDS_POINT WAV "Assets/Sounds/point.wav"
+
+IDI_ICON ICON "favicon.ico"
