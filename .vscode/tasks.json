@@ -14,7 +14,7 @@
         {
             "label": "Build Windows App",
             "type": "shell",
-            "command": "gcc -O3 -g ${fileBasenameNoExtension}.c resources.o -o ${fileBasenameNoExtension}.exe -mwindows -lmsimg32",
+            "command": "gcc -Wall -Werror -O3 -g ${fileBasenameNoExtension}.c resources.o -o ${fileBasenameNoExtension}.exe -mwindows -lmsimg32",
             "dependsOn": [],
             "group": {
                 "kind": "build",

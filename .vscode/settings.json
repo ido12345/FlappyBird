@@ -65,7 +65,8 @@
     "math.h": "c",
     "mmsystem.h": "c",
     "miniaudio.h": "c",
-    "resources.h": "c"
+    "resources.h": "c",
+    "string.h": "c"
   },
   "C_Cpp.errorSquiggles": "disabled"
 }
