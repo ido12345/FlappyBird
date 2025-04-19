@@ -21,6 +21,38 @@ void AttachConsoleToWindow()
 
 #include "ML.h"
 
+#define NN
+#define DEBUG_FPS
+
+#ifdef NN
+Network *BirdNN;
+#define RANGE_DISTANCE 10
+#ifdef RANGE_DISTANCE
+#define RAND_RANGE -RANGE_DISTANCE, RANGE_DISTANCE
+#else
+#define RAND_RANGE 0, 0.5
+#endif
+
+Network *BirdNNGrad;
+Network *BirdTargetNN;
+double learnRate = 1;
+
+const double PassPipeReward = 10;
+const double DeathReward = -5;
+
+#define STEPS_AMOUNT 5000
+
+int stepIndex = 0;
+int stepCounter = 0;
+int gameCounter = 0;
+Step *birdSteps[STEPS_AMOUNT];
+
+#define INPUT_MAT 1, 2
+
+BOOL NewNetwork = FALSE;
+#endif // NN
+double timeSpeedup = 1;
+
 HDC hTempDC = NULL;
 HBITMAP hCopyBitmap = NULL;
 HBITMAP hSavedBitmap = NULL;
@@ -58,7 +90,7 @@ BITMAP PipeBitmapTopEnd;
 BITMAP PipeBitmapBottomEnd;
 BITMAP PipeBitmapRepeat;
 
-HFONT hScoreFont;
+HFONT hDebugFont;
 
 HBITMAP hDigitBitmaps[10];
 BITMAP DigitBitmaps[10];
@@ -91,6 +123,9 @@ const void *LoadResourceData(UINT resourceID, LPCSTR resourceType, DWORD *size)
 
 void PlayMemorySound(UINT resourceID)
 {
+    if (timeSpeedup > 10)
+        return;
+
     DWORD dataSize = 0;
     const void *data = LoadResourceData(resourceID, "WAV", &dataSize);
 
@@ -121,7 +156,7 @@ void PlayMemorySound(UINT resourceID)
 }
 
 #define SCREEN_HEIGHT 1000
-#define SCREEN_WIDTH 1500
+#define SCREEN_WIDTH 600
 #define BIRD_HEIGHT 50
 #define BIRD_WIDTH 60
 // #define DELTA_TIME 0.01
@@ -337,39 +372,6 @@ ObstacleList *NewObstacleList(PointDouble data)
     return temp;
 }
 
-void InitializeGame()
-{
-    RECT ClientRect;
-    GetClientRect(mainHwnd, &ClientRect);
-
-    birdVelocity = 0;
-    BirdFlap = FALSE;
-    BirdPosition.x = min(RECT_WIDTH(ClientRect) / 2, 360),
-    BirdPosition.y = RECT_HEIGHT(ClientRect) / 2;
-
-    if (PipesList)
-    {
-        freeObstacleList(PipesList);
-        PipesList = NULL;
-    }
-    int obstacleY = rand_int(ClientRect.top + 10, ClientRect.bottom - 10 - PIPE_GAP);
-
-    PipesList = NewObstacleList((PointDouble){ClientRect.right, obstacleY});
-    NextObstacle = PipesList;
-
-    PassedPipes = 0;
-
-    BackgroundPosition.x = 0;
-    BackgroundPosition.y = 0;
-
-    BirdBitmapPTR = &BirdBitmap;
-}
-
-void GameOver()
-{
-    InitializeGame();
-}
-
 void CheckPassedPipeObstacle()
 {
     if (!NextObstacle || !NextObstacle->obstacle)
@@ -382,6 +384,9 @@ void CheckPassedPipeObstacle()
         PassedPipes++;
         NextObstacle = NextObstacle->next;
         PlayMemorySound(IDS_POINT);
+#ifdef NN
+        birdSteps[stepIndex]->reward = PassPipeReward;
+#endif
     }
 }
 
@@ -439,12 +444,14 @@ void PhysicsStep(double deltaTime)
 }
 
 LARGE_INTEGER frequency;
-LARGE_INTEGER prevTime, currentTime;
-LARGE_INTEGER lastFlap;
+LARGE_INTEGER prevPhysicsTime;
+LARGE_INTEGER prevFlapTime;
 
 void CheckBirdFlap()
 {
-    double elapsedTimeSinceFlap = (double)(currentTime.QuadPart - lastFlap.QuadPart) / frequency.QuadPart;
+    LARGE_INTEGER currentTime;
+    QueryPerformanceCounter(&currentTime);
+    double elapsedTimeSinceFlap = (double)(currentTime.QuadPart - prevFlapTime.QuadPart) / frequency.QuadPart;
     if (elapsedTimeSinceFlap < 0.1)
     {
         BirdBitmapPTR = &BirdBitmapFlap;
@@ -462,57 +469,227 @@ void CheckBirdFlap()
     }
 }
 
-double accumulated = 0;
-const double fixedDelta = 0.001;
+double TargetFPS = 200.0; // Frames Per Second
+double TargetPPS = 200.0; // Physics Per Second
+double accumulatedPhysicsTime = 0;
+double accumulatedRenderTime = 0;
+double physicsDelta;
+double renderDelta;
+double countedFPS = 0;
+
+void SetTiming()
+{
+    physicsDelta = (1.0 / TargetPPS);
+    renderDelta = (1.0 / TargetFPS);
+}
+
+void InitializeGame()
+{
+    RECT ClientRect;
+    GetClientRect(mainHwnd, &ClientRect);
+
+    birdVelocity = 0;
+    BirdFlap = FALSE;
+    BirdPosition.x = min(RECT_WIDTH(ClientRect) / 2, 360),
+    BirdPosition.y = RECT_HEIGHT(ClientRect) / 2;
+
+    if (PipesList)
+    {
+        freeObstacleList(PipesList);
+        PipesList = NULL;
+    }
+    int obstacleY = rand_int(ClientRect.top + 10, ClientRect.bottom - 10 - PIPE_GAP);
+
+    PipesList = NewObstacleList((PointDouble){ClientRect.right, obstacleY});
+    NextObstacle = PipesList;
+
+    PassedPipes = 0;
+
+    BackgroundPosition.x = 0;
+    BackgroundPosition.y = 0;
+
+    BirdBitmapPTR = &BirdBitmap;
+    SelectObject(BirdDC, hBirdBitmap);
+    prevFlapTime.QuadPart = 0;
+}
+
+void GameOver()
+{
+    InitializeGame();
+}
+
+void calc_QTargets(Network *TargetNN, Matrix *QTargets, Step *steps[], int *indexes)
+{
+    float gamma = 0.99;
+    for (int i = 0; i < QTargets->rows; i++)
+    {
+        int curRandIdx = indexes[i];
+        if (steps[curRandIdx]->death == false)
+        {
+            mat_copy(NETWORK_IN(TargetNN), steps[curRandIdx + 1]->state);
+            Network_forward(TargetNN);
+
+            float maxQ = MAT_AT(NETWORK_OUT(TargetNN), 0, 0);
+            for (int j = 1; j < NETWORK_OUT(TargetNN)->cols; j++)
+            {
+                if (MAT_AT(NETWORK_OUT(TargetNN), 0, j) > maxQ)
+                {
+                    maxQ = MAT_AT(NETWORK_OUT(TargetNN), 0, j);
+                }
+            }
+            MAT_AT(QTargets, i, 0) = steps[curRandIdx]->reward + (gamma * maxQ);
+        }
+        else // steps[curRandIdx]->death = true
+        {
+            MAT_AT(QTargets, i, 0) = steps[curRandIdx]->reward;
+        }
+    }
+}
+
+#ifdef NN
+void ReinforcementLearning()
+{
+    // PRINT_NETWORK(BirdNN);
+
+    for (int batching = 0; batching < 1; batching++)
+    {
+        int batchSize = 32;
+        batchSize = min(stepCounter - 1, batchSize);
+
+        // int batchIndexes[batchSize] = {-1};
+        int *batchIndexes = (int *)malloc(sizeof(*batchIndexes) * batchSize);
+
+        for (int i = 0; i < batchSize; i++)
+        {
+            int randIdx;
+        NewIdx:
+            randIdx = rand_int(0, stepCounter - 2);
+            for (int j = 0; j < i; j++)
+            {
+                if (batchIndexes[j] == randIdx)
+                {
+                    goto NewIdx;
+                }
+            }
+            batchIndexes[i] = randIdx;
+        }
+
+        Matrix *QTargets = mat_alloc(batchSize, 1);
+
+        calc_QTargets(BirdTargetNN, QTargets, birdSteps, batchIndexes);
+
+        // PRINT_MAT(QTargets);
+
+        Network_Q_backprop(BirdNN, BirdNNGrad, QTargets, birdSteps, batchIndexes);
+
+        // print_Network((BirdNNGrad), "BirdNNGrad", true);
+
+        Network_gradient_descent(BirdNN, BirdNNGrad, learnRate);
+
+        mat_destroy(QTargets);
+    }
+
+    // printf("Rate: %f\n", learnRate);
+    // printf("Epsilon: %f\n", epsilon);
+    // printf("Step Index: %d\n", stepIndex);
+    // print_Network((BirdNN), "BirdNN", true);
+
+    if (gameCounter % 10 == 0)
+    {
+        Network_copy(BirdTargetNN, BirdNN);
+    }
+}
+#endif
 
 #ifdef DEBUG_FPS
 unsigned long long framesPerSecond = 0;
 LARGE_INTEGER lastFramesCheck;
 #endif
 
-DWORD WINAPI PhysicsLoop(LPVOID lpParam)
+DWORD WINAPI GameLoop(LPVOID lpParam)
 {
+    (void)lpParam;
+
     while (1)
     {
+        LARGE_INTEGER currentTime;
         QueryPerformanceCounter(&currentTime);
-        double elapsedTime = (double)(currentTime.QuadPart - prevTime.QuadPart) / frequency.QuadPart;
-        prevTime = currentTime;
+        double elapsedTime = (double)(currentTime.QuadPart - prevPhysicsTime.QuadPart) / frequency.QuadPart;
+        prevPhysicsTime = currentTime;
+
+        accumulatedPhysicsTime += elapsedTime * timeSpeedup;
+        accumulatedRenderTime += elapsedTime * timeSpeedup;
 
 #ifdef DEBUG_FPS
         double elapsedTimeSinceFrames = (double)(currentTime.QuadPart - lastFramesCheck.QuadPart) / frequency.QuadPart;
         if (elapsedTimeSinceFrames >= 1)
         {
-            double avgFPS = (double)framesPerSecond / elapsedTimeSinceFrames;
-            system("cls");
-            printf("FPS: %.3lf\n", avgFPS);
+            countedFPS = (double)framesPerSecond / elapsedTimeSinceFrames;
             lastFramesCheck = currentTime;
             framesPerSecond = 0;
         }
 #endif
 
-        accumulated += elapsedTime;
-
-        while (accumulated >= fixedDelta)
+        while (accumulatedPhysicsTime >= physicsDelta)
         {
 #ifdef AUTOPILOT
             if (NextObstacle)
             {
-                if (BirdPosition.y + BIRD_HEIGHT >= NextObstacle->obstacle->y + PIPE_GAP)
+                if (BirdPosition.y + BIRD_HEIGHT >= NextObstacle->obstacle->y + PIPE_GAP + 10)
                 {
                     BirdFlap = TRUE;
                 }
             }
 #endif
+
+#ifdef NN
+            if (NewNetwork == TRUE)
+            {
+                Network_rand(BirdNN, RAND_RANGE);
+                NewNetwork = FALSE;
+            }
+
+            stepCounter++;
+            if (stepCounter > STEPS_AMOUNT)
+                stepCounter = STEPS_AMOUNT;
+
+            RECT ClientRect;
+            GetClientRect(mainHwnd, &ClientRect);
+
+            Matrix *netIn = mat_alloc(INPUT_MAT);
+            MAT_AT(netIn, 0, 0) = BirdPosition.y / ClientRect.bottom;
+            MAT_AT(netIn, 0, 1) = NextObstacle->obstacle->y / ClientRect.bottom;
+
+            mat_copy(NETWORK_IN(BirdNN), netIn);
+
+            Network_forward(BirdNN);
+
+            if (MAT_AT(NETWORK_OUT(BirdNN), 0, 0) > MAT_AT(NETWORK_OUT(BirdNN), 0, 1))
+            {
+                BirdFlap = TRUE;
+                birdSteps[stepIndex]->action = 0;
+                birdSteps[stepIndex]->output = MAT_AT(NETWORK_OUT(BirdNN), 0, 0);
+            }
+            else
+            {
+                birdSteps[stepIndex]->action = 1;
+                birdSteps[stepIndex]->output = MAT_AT(NETWORK_OUT(BirdNN), 0, 1);
+            }
+            mat_copy(birdSteps[stepIndex]->state, netIn);
+
+            mat_destroy(netIn);
+#endif
+
             if (BirdFlap == TRUE)
             {
-                lastFlap = currentTime;
+                prevFlapTime = currentTime;
                 birdVelocity = -sqrt(2 * gravity * DISTANCE_RATIO * FLAP_HEIGHT);
                 BirdFlap = FALSE;
-#ifndef AUTOPILOT
+#if !defined(AUTOPILOT) && !defined(NN)
                 PlayMemorySound(IDS_FLAP);
 #endif
             }
-            PhysicsStep(fixedDelta);
+            PhysicsStep(physicsDelta);
             CheckClearPipeObstacle();
             CheckNewPipeObstacle();
             CheckPassedPipeObstacle();
@@ -521,18 +698,33 @@ DWORD WINAPI PhysicsLoop(LPVOID lpParam)
             if (BirdWindowCollision() || BirdPipeCollision())
             {
                 PlayMemorySound(IDS_DIE);
+#ifdef NN
+                birdSteps[stepIndex]->death = TRUE;
+                birdSteps[stepIndex]->reward = DeathReward;
+
+                gameCounter++;
+                ReinforcementLearning();
+#endif
                 GameOver();
             }
-            else
+#ifdef NN
+            stepIndex++;
+            if (stepIndex >= STEPS_AMOUNT)
             {
-                InvalidateRect(mainHwnd, NULL, FALSE);
+                stepIndex = 0;
             }
+#endif
 
-            accumulated -= fixedDelta;
+            accumulatedPhysicsTime -= physicsDelta;
         }
-        UpdateWindow(mainHwnd);
 
-        // Sleep(0);
+        if (accumulatedRenderTime >= renderDelta)
+        {
+            accumulatedRenderTime -= renderDelta;
+            InvalidateRect(mainHwnd, NULL, FALSE);
+            UpdateWindow(mainHwnd);
+        }
+        // UpdateWindow(mainHwnd);
     }
 }
 
@@ -548,6 +740,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             case ' ':
                 BirdFlap = TRUE;
                 break;
+            case 'W':
+                timeSpeedup *= 2;
+                break;
+            case 'S':
+                timeSpeedup /= 2;
+                break;
+            case 'N':
+                NewNetwork = TRUE;
+                break;
+            }
+            if (wParam <= '9' && wParam >= '0')
+            {
+                timeSpeedup = wParam - '0';
             }
         }
         break;
@@ -828,6 +1033,37 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             }
         }
 
+        {
+            SetBkColor(hTempDC, RGB(0, 255, 0));
+            SetBkMode(hTempDC, TRANSPARENT);
+            SelectObject(hTempDC, hDebugFont);
+#ifdef DEBUG_FPS
+            {
+                RECT FPSRect = {
+                    .top = ClientRect.top,
+                    .left = ClientRect.left,
+                    .bottom = FPSRect.top + 64,
+                    .right = ClientRect.right,
+                };
+                char FPSbuffer[20];
+                snprintf(FPSbuffer, sizeof(FPSbuffer), "FPS: %.3lf", countedFPS);
+                DrawText(hTempDC, FPSbuffer, -1, &FPSRect, DT_TOP | DT_LEFT);
+            }
+#endif
+            if (timeSpeedup != 1)
+            {
+                RECT TimeRect = {
+                    .top = ClientRect.top + 64,
+                    .left = ClientRect.left,
+                    .bottom = TimeRect.top + 64,
+                    .right = ClientRect.right,
+                };
+                char TimeBuffer[20];
+                snprintf(TimeBuffer, sizeof(TimeBuffer), "x%.2lf", timeSpeedup);
+                DrawText(hTempDC, TimeBuffer, -1, &TimeRect, DT_TOP | DT_LEFT);
+            }
+        }
+
         BitBlt(hdc,
                0, 0,
                clientWidth, clientHeight,
@@ -901,7 +1137,7 @@ void InitializeAssets()
     GetObject(hPipeBitmapTopEnd, sizeof(PipeBitmapTopEnd), &PipeBitmapTopEnd);
     GetObject(hPipeBitmapBottomEnd, sizeof(PipeBitmapBottomEnd), &PipeBitmapBottomEnd);
     GetObject(hPipeBitmapRepeat, sizeof(PipeBitmapRepeat), &PipeBitmapRepeat);
-    hScoreFont = CreateFont(
+    hDebugFont = CreateFont(
         64,
         0,
         0,
@@ -917,7 +1153,7 @@ void InitializeAssets()
         DEFAULT_PITCH,
         "Arial");
 
-    for (int i = 0; i < (sizeof(hDigitBitmaps) / sizeof(*hDigitBitmaps)); i++)
+    for (int i = 0; i < (int)ARR_LEN(hDigitBitmaps); i++)
     {
         hDigitBitmaps[i] = (HBITMAP)LoadImage(GetModuleHandle(NULL),
                                               MAKEINTRESOURCE(IDB_DIGIT_0 + i),
@@ -954,9 +1190,9 @@ void DeleteAssets()
     DeleteObject(hPipeBitmapTopEnd);
     DeleteObject(hPipeBitmapRepeat);
 
-    DeleteObject(hScoreFont);
+    DeleteObject(hDebugFont);
 
-    for (int i = 0; i < (sizeof(hDigitBitmaps) / sizeof(*hDigitBitmaps)); i++)
+    for (int i = 0; i < (int)ARR_LEN(hDigitBitmaps); i++)
     {
         DeleteObject(hDigitBitmaps[i]);
     }
@@ -972,15 +1208,43 @@ void DeleteAssets()
     DeleteDC(hDigitDC);
 }
 
+#ifdef NN
+void InitializeNetwork()
+{
+    int layers[] = {2, 2};
+    ActivationType acts[] = {SIGMOID};
+
+    BirdNN = NeuralNetwork(layers, ARR_LEN(layers), acts);
+    BirdTargetNN = NeuralNetwork(layers, ARR_LEN(layers), acts);
+    BirdNNGrad = GradientNetwork(layers, ARR_LEN(layers));
+    Network_rand(BirdNN, RAND_RANGE);
+    Network_copy(BirdTargetNN, BirdNN);
+
+    for (int i = 0; i < STEPS_AMOUNT; i++)
+    {
+        birdSteps[i] = (Step *)calloc(sizeof(*birdSteps[i]), 1);
+        birdSteps[i]->state = mat_alloc(INPUT_MAT);
+    }
+}
+#endif
+
 const char g_szClassName[] = "FlappyBirdWindowClass";
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
+    (void)hPrevInstance;
+    (void)lpCmdLine;
+
     srand(time(0));
-#if defined(DEBUG_CONSOLE) || defined(DEBUG_FPS)
+
+#if defined(DEBUG_CONSOLE)
     AttachConsoleToWindow();
 #endif
 
     InitializeAssets();
+#ifdef NN
+    InitializeNetwork();
+#endif
+    SetTiming();
 
     WNDCLASSEX wc = {
         .cbSize = sizeof(WNDCLASSEX),
@@ -1019,18 +1283,19 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     InitializeGame();
 
     QueryPerformanceFrequency(&frequency);
-    QueryPerformanceCounter(&prevTime);
-    DWORD threadId;
+    QueryPerformanceCounter(&prevPhysicsTime);
+
+    DWORD physicsThreadId;
     HANDLE physicsThread = CreateThread(
         NULL,
         0,
-        PhysicsLoop,
+        GameLoop,
         NULL,
         0,
-        &threadId);
+        &physicsThreadId);
     if (!physicsThread)
     {
-        MessageBox(NULL, "Thread Creation Failed!", "Error!", MB_OK | MB_ICONERROR);
+        MessageBox(NULL, "Physics Thread Creation Failed!", "Error!", MB_OK | MB_ICONERROR);
         return 0;
     }
 
