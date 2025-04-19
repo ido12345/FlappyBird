@@ -26,7 +26,7 @@ void AttachConsoleToWindow()
 
 #ifdef NN
 Network *BirdNN;
-#define RANGE_DISTANCE 10
+#define RANGE_DISTANCE 100
 #ifdef RANGE_DISTANCE
 #define RAND_RANGE -RANGE_DISTANCE, RANGE_DISTANCE
 #else
